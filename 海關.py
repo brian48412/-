@@ -179,12 +179,22 @@ def write_hk_value(ws, row: int, col: int, value: float):
 
 
 
-def paste_trade_cell(ws, dst_row, dst_col, value, fmt_row):
+def format_without_r(number_format) -> str:
+    """Drop (r) from an Excel number format; keep decimals / separators."""
+    if not number_format:
+        return FORMAT_WITHOUT_R
+    s = str(number_format).replace('"(r)"', '').replace('(r)', '').strip()
+    return s if s else FORMAT_WITHOUT_R
+
+
+def paste_trade_cell(ws, dst_row, dst_col, value, fmt_row, force_no_r: bool = False):
     """Set Value on Trade Stats cell; reinforce NumberFormat from fmt_row same column."""
     cell = ws.Cells(dst_row, dst_col)
     cell.Value = value
     fmt = ws.Cells(fmt_row, dst_col).NumberFormat
-    if fmt and str(fmt).strip():
+    if force_no_r:
+        cell.NumberFormat = format_without_r(fmt)
+    elif fmt and str(fmt).strip():
         cell.NumberFormat = fmt
 
 
@@ -328,7 +338,7 @@ def main():
         # Resolve write targets by year+month (dynamic; survives row shifts)
         new_month_hk = str(ws_r_china_hk.Cells(new_row_hk, 2).Value).strip()
         prev_month_hk = str(ws_r_china_hk.Cells(prev_row_hk, 2).Value).strip()
-        new_year_hk = get_year_of_row(ws_r_china_hk, new_row_hk)
+        new_year_hk = get_year_of_row(ws_r_china_hk, new_year_hk)
         prev_year_hk = get_year_of_row(ws_r_china_hk, prev_row_hk)
         target_new_hk = find_month_row(ws_r_china_hk, new_year_hk, new_month_hk)
         target_prev_hk = find_month_row(ws_r_china_hk, prev_year_hk, prev_month_hk)
@@ -386,23 +396,23 @@ def main():
 
         # R_China H → Trade D, J → F, D → O, F → Q
         paste_trade_cell(ws_trade_main, new_row_trade, 4,
-                         ws_r_china.Cells(new_row, 8).Value, prev_row_trade)   # H → D
+                         ws_r_china.Cells(new_row, 8).Value, prev_row_trade, force_no_r=True)   # H → D
         paste_trade_cell(ws_trade_main, new_row_trade, 6,
-                         ws_r_china.Cells(new_row, 10).Value, prev_row_trade)  # J → F
+                         ws_r_china.Cells(new_row, 10).Value, prev_row_trade, force_no_r=True)  # J → F
         paste_trade_cell(ws_trade_main, new_row_trade, 15,
-                         ws_r_china.Cells(new_row, 4).Value, prev_row_trade)   # D → O
+                         ws_r_china.Cells(new_row, 4).Value, prev_row_trade, force_no_r=True)   # D → O
         paste_trade_cell(ws_trade_main, new_row_trade, 17,
-                         ws_r_china.Cells(new_row, 6).Value, prev_row_trade)   # F → Q
+                         ws_r_china.Cells(new_row, 6).Value, prev_row_trade, force_no_r=True)   # F → Q
 
         # R_China(HK) H → Trade K, J → M, D → S, F → U
         paste_trade_cell(ws_trade_main, new_row_trade, 11,
-                         ws_r_china_hk.Cells(target_new_hk, 8).Value, prev_row_trade)   # H → K
+                         ws_r_china_hk.Cells(target_new_hk, 8).Value, prev_row_trade, force_no_r=True)   # H → K
         paste_trade_cell(ws_trade_main, new_row_trade, 13,
-                         ws_r_china_hk.Cells(target_new_hk, 10).Value, prev_row_trade)  # J → M
+                         ws_r_china_hk.Cells(target_new_hk, 10).Value, prev_row_trade, force_no_r=True)  # J → M
         paste_trade_cell(ws_trade_main, new_row_trade, 19,
-                         ws_r_china_hk.Cells(target_new_hk, 4).Value, prev_row_trade)   # D → S
+                         ws_r_china_hk.Cells(target_new_hk, 4).Value, prev_row_trade, force_no_r=True)   # D → S
         paste_trade_cell(ws_trade_main, new_row_trade, 21,
-                         ws_r_china_hk.Cells(target_new_hk, 6).Value, prev_row_trade)   # F → U
+                         ws_r_china_hk.Cells(target_new_hk, 6).Value, prev_row_trade, force_no_r=True)   # F → U
         print("  New-month paste done (D/F/O/Q from R_China; K/M/S/U from R_China(HK))")
 
         # 3.3b AutoFill formula columns W and Y (drag prev → new; relative refs adjust)
