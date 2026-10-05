@@ -420,10 +420,10 @@ def main():
         for col in [23, 25]:  # W, Y
             autofill_column(ws_trade_main, prev_row_trade, new_row_trade, col)
 
-        # 3.4 Historical sync (existing months only): D→O and H→D
-        # Exclude new_row; do NOT create rows; no HK historical sync
+        # 3.4 Historical sync: last year Jan → latest−1 (exclude new insert month)
+        # Same 4 maps as new row; (r) follows R_China source format
         print(f"  Historical sync R_China rows {last_year_jan_row}–{prev_row} → Trade Stats "
-              f"(D→O, H→D), matched by year+month ...")
+              f"(H→D, J→F, D→O, F→Q), (r) from source ...")
         copied = 0
         for src_row in range(last_year_jan_row, prev_row + 1):
             month = str(ws_r_china.Cells(src_row, 2).Value or "").strip()
@@ -440,14 +440,23 @@ def main():
             if dst_row == new_row_trade:
                 continue  # new month already handled above
 
-            # R_China D → Trade O ; R_China H → Trade D
-            paste_trade_cell(ws_trade_main, dst_row, 15,
-                             ws_r_china.Cells(src_row, 4).Value, dst_row)
-            paste_trade_cell(ws_trade_main, dst_row, 4,
-                             ws_r_china.Cells(src_row, 8).Value, dst_row)
+            # H→D, J→F, D→O, F→Q — keep source (r) / no-(r) format
+            pairs = [
+                (8, 4),    # H → D
+                (10, 6),   # J → F
+                (4, 15),   # D → O
+                (6, 17),   # F → Q
+            ]
+            for src_col, dst_col in pairs:
+                src_cell = ws_r_china.Cells(src_row, src_col)
+                dst_cell = ws_trade_main.Cells(dst_row, dst_col)
+                dst_cell.Value = src_cell.Value
+                src_fmt = src_cell.NumberFormat
+                if src_fmt and str(src_fmt).strip():
+                    dst_cell.NumberFormat = src_fmt
             copied += 1
 
-        print(f"  Historical sync copied D→O / H→D for {copied} existing month rows")
+        print(f"  Historical sync copied H→D/J→F/D→O/F→Q for {copied} existing month rows")
 
         # Save
         print("\nSaving workbooks ...")
