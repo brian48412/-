@@ -179,23 +179,53 @@ def write_hk_value(ws, row: int, col: int, value: float):
 
 
 
-def format_without_r(number_format) -> str:
-    """Drop (r) from an Excel number format; keep decimals / separators."""
+FORMAT_PLAIN_FALLBACK = '#,##0.0'
+
+
+def has_r_mark(number_format) -> bool:
+    """True if an Excel number format shows an (r) mark (any quoting/escaping style)."""
     if not number_format:
-        return FORMAT_WITHOUT_R
-    s = str(number_format).replace('"(r)"', '').replace('(r)', '').strip()
-    return s if s else FORMAT_WITHOUT_R
+        return False
+    s = str(number_format).replace('\\', '').replace('"', '').lower()
+    return '(r)' in s
 
 
-def paste_trade_cell(ws, dst_row, dst_col, value, fmt_row, force_no_r: bool = False):
-    """Set Value on Trade Stats cell; reinforce NumberFormat from fmt_row same column."""
+def safe_set_number_format(cell, fmt, fallback=FORMAT_PLAIN_FALLBACK):
+    """Set NumberFormat; if Excel rejects it, use the fallback instead of crashing."""
+    try:
+        cell.NumberFormat = fmt
+    except Exception:
+        print(f"    Warning: Excel rejected format {fmt!r} at {cell.Address}; using {fallback!r}")
+        cell.NumberFormat = fallback
+
+
+def find_plain_trade_format(ws, col: int, start_row: int, max_rows_up: int = 120) -> str:
+    """
+    Sheet 3's own format for cells without (r) in this column:
+    scan upward from start_row for the nearest cell whose format has no (r).
+    """
+    for r in range(start_row, max(start_row - max_rows_up, 1) - 1, -1):
+        cell = ws.Cells(r, col)
+        if cell.Value is None:
+            continue
+        fmt = cell.NumberFormat
+        if fmt and str(fmt).strip() and not has_r_mark(fmt):
+            return fmt
+    return FORMAT_PLAIN_FALLBACK
+
+
+def paste_trade_cell(ws, dst_row, dst_col, value, src_fmt, plain_fmt, force_no_r: bool = False):
+    """
+    Write a value into sheet 3.
+    - Source shows (r) and not force_no_r -> copy the source (r) format.
+    - Otherwise -> keep sheet 3's own plain format for that column.
+    """
     cell = ws.Cells(dst_row, dst_col)
     cell.Value = value
-    fmt = ws.Cells(fmt_row, dst_col).NumberFormat
-    if force_no_r:
-        cell.NumberFormat = format_without_r(fmt)
-    elif fmt and str(fmt).strip():
-        cell.NumberFormat = fmt
+    if not force_no_r and has_r_mark(src_fmt):
+        safe_set_number_format(cell, src_fmt, plain_fmt)
+    else:
+        safe_set_number_format(cell, plain_fmt)
 
 
 def write_value_with_r_logic(cell, new_value, tracked_cells: list, force_no_r: bool = False):
@@ -390,30 +420,30 @@ def main():
         # Re-write month name in column B (PasteFormats may overwrite it)
         ws_trade_main.Cells(new_row_trade, 2).Value = month_trade
 
-        # 3.3 New month only — paste mapped values (keep Trade Stats formats)
+        # Sheet 3's own plain (no-(r)) format per column, read before writing
+        trade_cols = [4, 6, 11, 13, 15, 17, 19, 21]   # D F K M O Q S U
+        plain_fmt = {c: find_plain_trade_format(ws_trade_main, c, prev_row_trade)
+                     for c in trade_cols}
+
+        # 3.3 New month only — paste mapped values; new row never has (r)
         print(f"  Pasting new-month values → Trade Stats row {new_row_trade} ...")
         print(f"    sources: R_China row {new_row}, R_China(HK) row {target_new_hk}")
 
-        # R_China H → Trade D, J → F, D → O, F → Q
-        paste_trade_cell(ws_trade_main, new_row_trade, 4,
-                         ws_r_china.Cells(new_row, 8).Value, prev_row_trade, force_no_r=True)   # H → D
-        paste_trade_cell(ws_trade_main, new_row_trade, 6,
-                         ws_r_china.Cells(new_row, 10).Value, prev_row_trade, force_no_r=True)  # J → F
-        paste_trade_cell(ws_trade_main, new_row_trade, 15,
-                         ws_r_china.Cells(new_row, 4).Value, prev_row_trade, force_no_r=True)   # D → O
-        paste_trade_cell(ws_trade_main, new_row_trade, 17,
-                         ws_r_china.Cells(new_row, 6).Value, prev_row_trade, force_no_r=True)   # F → Q
-
-        # R_China(HK) H → Trade K, J → M, D → S, F → U
-        paste_trade_cell(ws_trade_main, new_row_trade, 11,
-                         ws_r_china_hk.Cells(target_new_hk, 8).Value, prev_row_trade, force_no_r=True)   # H → K
-        paste_trade_cell(ws_trade_main, new_row_trade, 13,
-                         ws_r_china_hk.Cells(target_new_hk, 10).Value, prev_row_trade, force_no_r=True)  # J → M
-        paste_trade_cell(ws_trade_main, new_row_trade, 19,
-                         ws_r_china_hk.Cells(target_new_hk, 4).Value, prev_row_trade, force_no_r=True)   # D → S
-        paste_trade_cell(ws_trade_main, new_row_trade, 21,
-                         ws_r_china_hk.Cells(target_new_hk, 6).Value, prev_row_trade, force_no_r=True)   # F → U
-        print("  New-month paste done (D/F/O/Q from R_China; K/M/S/U from R_China(HK))")
+        new_row_pairs = [
+            (ws_r_china,    new_row,       8,  4),   # R_China H → D
+            (ws_r_china,    new_row,       10, 6),   # R_China J → F
+            (ws_r_china,    new_row,       4,  15),  # R_China D → O
+            (ws_r_china,    new_row,       6,  17),  # R_China F → Q
+            (ws_r_china_hk, target_new_hk, 8,  11),  # HK H → K
+            (ws_r_china_hk, target_new_hk, 10, 13),  # HK J → M
+            (ws_r_china_hk, target_new_hk, 4,  19),  # HK D → S
+            (ws_r_china_hk, target_new_hk, 6,  21),  # HK F → U
+        ]
+        for src_ws, src_row, src_col, dst_col in new_row_pairs:
+            src_cell = src_ws.Cells(src_row, src_col)
+            paste_trade_cell(ws_trade_main, new_row_trade, dst_col, src_cell.Value,
+                             src_cell.NumberFormat, plain_fmt[dst_col], force_no_r=True)
+        print("  New-month paste done (D/F/O/Q from R_China; K/M/S/U from R_China(HK)), no (r)")
 
         # 3.3b AutoFill formula columns W and Y (drag prev → new; relative refs adjust)
         print("  AutoFilling Trade Stats formulas W and Y ...")
@@ -421,10 +451,11 @@ def main():
             autofill_column(ws_trade_main, prev_row_trade, new_row_trade, col)
 
         # 3.4 Historical sync: last year Jan → latest−1 (exclude new insert month)
-        # Same 4 maps as new row; (r) follows R_China source format
+        # (r) in source -> copy source (r) format; no (r) -> sheet 3's own plain format
         print(f"  Historical sync R_China rows {last_year_jan_row}–{prev_row} → Trade Stats "
-              f"(H→D, J→F, D→O, F→Q), (r) from source ...")
+              f"(H→D, J→F, D→O, F→Q) ...")
         copied = 0
+        hist_pairs = [(8, 4), (10, 6), (4, 15), (6, 17)]   # H→D, J→F, D→O, F→Q
         for src_row in range(last_year_jan_row, prev_row + 1):
             month = str(ws_r_china.Cells(src_row, 2).Value or "").strip()
             if month not in MONTHS:
@@ -440,20 +471,10 @@ def main():
             if dst_row == new_row_trade:
                 continue  # new month already handled above
 
-            # H→D, J→F, D→O, F→Q — keep source (r) / no-(r) format
-            pairs = [
-                (8, 4),    # H → D
-                (10, 6),   # J → F
-                (4, 15),   # D → O
-                (6, 17),   # F → Q
-            ]
-            for src_col, dst_col in pairs:
+            for src_col, dst_col in hist_pairs:
                 src_cell = ws_r_china.Cells(src_row, src_col)
-                dst_cell = ws_trade_main.Cells(dst_row, dst_col)
-                dst_cell.Value = src_cell.Value
-                src_fmt = src_cell.NumberFormat
-                if src_fmt and str(src_fmt).strip():
-                    dst_cell.NumberFormat = src_fmt
+                paste_trade_cell(ws_trade_main, dst_row, dst_col, src_cell.Value,
+                                 src_cell.NumberFormat, plain_fmt[dst_col])
             copied += 1
 
         print(f"  Historical sync copied H→D/J→F/D→O/F→Q for {copied} existing month rows")
