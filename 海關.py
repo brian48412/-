@@ -6,6 +6,7 @@ using data from File_1.xls ~ File_4.xls.
 """
 
 import os
+import re
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
@@ -29,6 +30,7 @@ xlPasteValues   = -4163
 xlPasteFormats  = -4122
 xlPasteFormulas = -4123
 xlValues        = -4163
+xlUp            = -4162
 
 # Number formats
 FORMAT_WITH_R    = '###0.0 "(r)"'
@@ -37,6 +39,9 @@ FORMAT_HK_VALUE  = '0.00'          # 2 decimal places for R_China(HK) D & H
 
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+# File_1 B2 title, e.g. "（4）2026年8月进出口商品主要国别（地区）总值表（美元值）"
+FILE1_MONTH_RE = re.compile(r'(\d{4})\s*年\s*(\d{1,2})\s*月')
 
 
 # ============================================================
@@ -85,75 +90,179 @@ def safe_float(val):
             return None
 
 
-def next_month_name(month_str: str) -> str:
-    idx = MONTHS.index(month_str.strip())
-    return MONTHS[(idx + 1) % 12]
+def to_year(val):
+    """Return a year (2000-2100) from a column A value, else None."""
+    if val is None:
+        return None
+    try:
+        y = int(float(str(val).strip()))
+    except (TypeError, ValueError):
+        return None
+    return y if 2000 <= y <= 2100 else None
 
 
-def find_latest_month_row(ws, start_row: int, end_row: int) -> int:
-    latest_row = None
-    for row in range(start_row, end_row + 1):
-        val = ws.Cells(row, 2).Value
-        if val and str(val).strip() in MONTHS:
-            latest_row = row
-    if latest_row is None:
-        raise ValueError(f"No month found in B{start_row}:B{end_row} on {ws.Name}")
-    return latest_row
+def last_used_row(ws) -> int:
+    """Last used row of the sheet (no hard-coded range)."""
+    last = 0
+    try:
+        ur = ws.UsedRange
+        last = int(ur.Row) + int(ur.Rows.Count) - 1
+    except Exception:
+        pass
+    try:
+        last = max(last, int(ws.Cells(ws.Rows.Count, 2).End(xlUp).Row))
+    except Exception:
+        pass
+    return max(last, 1)
 
 
-def insert_new_row_after_latest(ws, search_start: int, search_end: int, add_star: bool = False):
+def read_month_rows(ws):
     """
-    Insert a new row after the latest month.
+    Scan the whole sheet. Return [(row, year, month), ...] top to bottom for
+    every row whose column B is a month name. Year = column A of that row or
+    the nearest year above it (column A only has the year on its first month).
+    year is None if no year was found above.
+    """
+    last = last_used_row(ws)
+    try:
+        block = ws.Range(ws.Cells(1, 1), ws.Cells(last, 2)).Value
+        pairs = [(r[0], r[1]) for r in block]
+    except Exception:
+        pairs = [(ws.Cells(r, 1).Value, ws.Cells(r, 2).Value) for r in range(1, last + 1)]
+
+    out = []
+    year = None
+    for row, (a_val, b_val) in enumerate(pairs, start=1):
+        y = to_year(a_val)
+        if y is not None:
+            year = y
+        month = str(b_val or "").strip()
+        if month in MONTHS:
+            out.append((row, year, month))
+    return out
+
+
+def find_latest_month_row(ws) -> int:
+    rows = read_month_rows(ws)
+    if not rows:
+        raise ValueError(f"No month found in column B on {ws.Name}")
+    return rows[-1][0]
+
+
+def get_latest_year_month(ws):
+    """(row, year, month) of the latest month row on the sheet."""
+    rows = read_month_rows(ws)
+    if not rows:
+        raise ValueError(f"No month found in column B on {ws.Name}")
+    return rows[-1]
+
+
+def prev_year_month(year: int, month: str):
+    idx = MONTHS.index(month)
+    if idx == 0:
+        return year - 1, "Dec"
+    return year, MONTHS[idx - 1]
+
+
+def insert_new_row_after_latest(ws, year: int, month: str, add_star: bool = False):
+    """
+    Insert a new row after the latest month and label it with the target
+    month from File_1 (and the year in column A when the month is Jan).
     If add_star=True (for R_China(HK)), also write "*" into column C.
     """
-    latest_row = find_latest_month_row(ws, search_start, search_end)
-    latest_month = str(ws.Cells(latest_row, 2).Value).strip()
-    next_m = next_month_name(latest_month)
+    latest_row = find_latest_month_row(ws)
 
     ws.Rows(latest_row + 1).Insert()
     new_row = latest_row + 1
-    ws.Cells(new_row, 2).Value = next_m
+    if month == "Jan":
+        ws.Cells(new_row, 1).Value = year      # column A: year on its first month
+    ws.Cells(new_row, 2).Value = month
 
     if add_star:
         ws.Cells(new_row, 3).Value = "*"          # column C
 
-    print(f"  [{ws.Name}] Inserted new_row = {new_row}  (month = {next_m})")
+    print(f"  [{ws.Name}] Inserted new_row = {new_row}  ({year} {month})")
     return new_row
 
 
 def get_year_of_row(ws, row: int) -> int:
     for r in range(row, 0, -1):
-        val = ws.Cells(r, 1).Value
-        if val is not None:
-            try:
-                y = int(val)
-                if 2000 <= y <= 2100:
-                    return y
-            except (TypeError, ValueError):
-                pass
+        y = to_year(ws.Cells(r, 1).Value)
+        if y is not None:
+            return y
     raise ValueError(f"Cannot determine year for row {row} on {ws.Name}")
 
 
-def find_month_row(ws, year: int, month: str, search_start: int = 300, search_end: int = 450) -> int:
-    for row in range(search_start, search_end + 1):
-        b_val = str(ws.Cells(row, 2).Value or "").strip()
-        if b_val != month:
-            continue
-        try:
-            y = get_year_of_row(ws, row)
-            if y == year:
-                return row
-        except ValueError:
-            continue
+def find_month_row(ws, year: int, month: str) -> int:
+    for row, y, m in read_month_rows(ws):
+        if y == year and m == month:
+            return row
     raise ValueError(f"Cannot find {year} {month} on sheet {ws.Name}")
 
 
-def try_find_month_row(ws, year: int, month: str, search_start: int = 300, search_end: int = 450):
+def try_find_month_row(ws, year: int, month: str):
     """Like find_month_row but returns None when the month is missing."""
     try:
-        return find_month_row(ws, year, month, search_start, search_end)
+        return find_month_row(ws, year, month)
     except ValueError:
         return None
+
+
+def parse_file1_year_month(ws_f1):
+    """
+    Read the target month from File_1 B2 (merged B2:K2), e.g.
+    "（4）2026年8月进出口..." -> (2026, "Aug"). Returns None if not found.
+    """
+    texts = []
+    try:
+        texts.append(ws_f1.Range("B2").Value)
+    except Exception:
+        pass
+    try:
+        texts.append(ws_f1.Range("B2").MergeArea.Cells(1, 1).Value)
+    except Exception:
+        pass
+    for col in range(2, 12):          # B2:K2
+        try:
+            texts.append(ws_f1.Cells(2, col).Value)
+        except Exception:
+            pass
+
+    for text in texts:
+        if text is None:
+            continue
+        m = FILE1_MONTH_RE.search(str(text))
+        if m:
+            year, month_num = int(m.group(1)), int(m.group(2))
+            if 1 <= month_num <= 12:
+                return year, MONTHS[month_num - 1]
+    return None
+
+
+def check_ready_to_update(sheets, target_year: int, target_month: str) -> bool:
+    """
+    Stop duplicate runs:
+    - target month already on any sheet -> stop
+    - latest month on any sheet is not the month before target -> stop
+    """
+    for ws in sheets:
+        if try_find_month_row(ws, target_year, target_month) is not None:
+            print(f"{target_year} {target_month} already exists on sheet {ws.Name}. "
+                  f"Nothing to update. Stopping.")
+            return False
+
+    exp_year, exp_month = prev_year_month(target_year, target_month)
+    for ws in sheets:
+        rows = read_month_rows(ws)
+        if not rows:
+            print(f"{ws.Name}: no month rows found in column B. Stopping.")
+            return False
+        _, last_year, last_month = rows[-1]
+        if (last_year, last_month) != (exp_year, exp_month):
+            print(f"{ws.Name} latest month is {last_year} {last_month}, expected "
+                  f"{exp_year} {exp_month} before {target_year} {target_month}. Stopping.")
+            return False
+    return True
 
 
 def autofill_column(ws, src_row: int, dest_row: int, col: int):
@@ -279,12 +388,28 @@ def main():
             ws_trade_main = wb_trade.Sheets(1)
 
         # ==================================================
+        # PART 0 – Duplicate-run guard (nothing is changed before this passes)
+        # ==================================================
+        print("\n========== PART 0 : Check target month ==========")
+        target = parse_file1_year_month(ws_f1)
+        if target is None:
+            print("Cannot read the year/month (yyyy年m月) from File_1 cell B2. "
+                  "Nothing updated. Stopping.")
+            return
+        target_year, target_month = target
+        print(f"  File_1 month: {target_year} {target_month}")
+
+        if not check_ready_to_update([ws_r_china, ws_r_china_hk, ws_trade_main],
+                                     target_year, target_month):
+            return          # finally: workbooks closed without saving
+
+        # ==================================================
         # PART 1 – R_China
         # ==================================================
         print("\n========== PART 1 : R_China ==========")
 
         # 1.1 Insert new_row
-        new_row = insert_new_row_after_latest(ws_r_china, 400, 411)
+        new_row = insert_new_row_after_latest(ws_r_china, target_year, target_month)
         prev_row = new_row - 1
 
         # 1.2 File_4 → new_row  (force_no_r = True)
@@ -308,7 +433,7 @@ def main():
             autofill_column(ws_r_china, prev_row, new_row, col)
 
         # 1.4 Last-year January block
-        curr_year = get_year_of_row(ws_r_china, new_row)
+        curr_year = target_year
         last_year = curr_year - 1
         last_year_jan_row = find_month_row(ws_r_china, last_year, "Jan")
         print(f"  Last-year January found at row {last_year_jan_row}")
@@ -362,7 +487,8 @@ def main():
         print("\n========== PART 2 : R_China(HK) ==========")
 
         # Insert new_row + put "*" in column C
-        new_row_hk = insert_new_row_after_latest(ws_r_china_hk, 398, 409, add_star=True)
+        new_row_hk = insert_new_row_after_latest(ws_r_china_hk, target_year, target_month,
+                                                 add_star=True)
         prev_row_hk = new_row_hk - 1
 
         # Resolve write targets by year+month (dynamic; survives row shifts)
@@ -407,7 +533,7 @@ def main():
 
         # 3.1 Insert new month row (same pattern as R_China)
         print("  Inserting new month row on Trade Stats ...")
-        new_row_trade = insert_new_row_after_latest(ws_trade_main, 380, 450)
+        new_row_trade = insert_new_row_after_latest(ws_trade_main, target_year, target_month)
         prev_row_trade = new_row_trade - 1
         month_trade = str(ws_trade_main.Cells(new_row_trade, 2).Value or "").strip()
         print(f"  Trade Stats new_row_trade = {new_row_trade}, prev_row_trade = {prev_row_trade}")
@@ -417,11 +543,13 @@ def main():
         ws_trade_main.Rows(prev_row_trade).Copy()
         ws_trade_main.Rows(new_row_trade).PasteSpecial(Paste=xlPasteFormats)
         excel.CutCopyMode = False
-        # Re-write month name in column B (PasteFormats may overwrite it)
+        # Re-write year (Jan only) and month name (PasteFormats may overwrite them)
+        if target_month == "Jan":
+            ws_trade_main.Cells(new_row_trade, 1).Value = target_year
         ws_trade_main.Cells(new_row_trade, 2).Value = month_trade
 
         # Sheet 3's own plain (no-(r)) format per column, read before writing
-        trade_cols = [4, 6, 11, 13, 15, 17, 19, 21]   # D F K M O Q S U
+        trade_cols = [4, 6, 11, 15, 17, 19]   # D F K O Q S (M U are formulas)
         plain_fmt = {c: find_plain_trade_format(ws_trade_main, c, prev_row_trade)
                      for c in trade_cols}
 
@@ -435,19 +563,17 @@ def main():
             (ws_r_china,    new_row,       4,  15),  # R_China D → O
             (ws_r_china,    new_row,       6,  17),  # R_China F → Q
             (ws_r_china_hk, target_new_hk, 8,  11),  # HK H → K
-            (ws_r_china_hk, target_new_hk, 10, 13),  # HK J → M
             (ws_r_china_hk, target_new_hk, 4,  19),  # HK D → S
-            (ws_r_china_hk, target_new_hk, 6,  21),  # HK F → U
         ]
         for src_ws, src_row, src_col, dst_col in new_row_pairs:
             src_cell = src_ws.Cells(src_row, src_col)
             paste_trade_cell(ws_trade_main, new_row_trade, dst_col, src_cell.Value,
                              src_cell.NumberFormat, plain_fmt[dst_col], force_no_r=True)
-        print("  New-month paste done (D/F/O/Q from R_China; K/M/S/U from R_China(HK)), no (r)")
+        print("  New-month paste done (D/F/O/Q from R_China; K/S from R_China(HK)), no (r)")
 
-        # 3.3b AutoFill formula columns W and Y (drag prev → new; relative refs adjust)
-        print("  AutoFilling Trade Stats formulas W and Y ...")
-        for col in [23, 25]:  # W, Y
+        # 3.3b AutoFill formula columns M, U, W, Y (drag prev → new; relative refs adjust)
+        print("  AutoFilling Trade Stats formulas M, U, W and Y ...")
+        for col in [13, 21, 23, 25]:  # M, U, W, Y
             autofill_column(ws_trade_main, prev_row_trade, new_row_trade, col)
 
         # 3.4 Historical sync: last year Jan → latest−1 (exclude new insert month)
